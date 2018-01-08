@@ -1,0 +1,167 @@
+# US building permits
+
+```{r setup}
+library(tidyverse)
+```
+
+## Data import
+
+Data downloaded from <https://www.recenter.tamu.edu/data/building-permits/>
+
+```{r}
+permits_raw <- read_csv("dataPermit_full.csv", na = "null")
+permits_raw
+```
+
+* f1 = 1 family home; f24 = 2-4 family home; f5 = 5+ unit home
+* units = number built; change = percent change from previous month
+* value = average value per unit; valchange = percent change from previous month
+Hire Director of Education
+
+Eliminate the change and valchange variables; can easily recompute if needed (and good practice to be sceptical about someone elses computations)
+
+```{r}
+permits <- permits_raw %>%
+  select(-ends_with("change")) %>%
+  separate(date, c("month", "year"), "/", convert = TRUE) %>%
+  filter(year > 2007)
+permits
+```
+
+
+## Very basic EDA
+
+```{r}
+permits %>% count(year)
+permits %>% count(area)
+permits %>% count(area) %>% count(n)
+```
+
+I'm going to arbitrarily focus on single family houses. 
+
+```{r}
+ggplot(permits, aes(year + month / 12, f1units)) + 
+  geom_line(aes(group = area))
+```
+
+## Focus on big cities
+
+TOO MUCH DATA.
+
+Let's start by focusing on the bigger cities. This might give a misleading overview (maybe big cities are different fundamentally) but it's a good place to start because they'll have more permits so should hopefully be less variation and the long-term patterns clearler.
+
+```{r}
+f1units <- permits %>% 
+  group_by(area) %>%
+  summarise(mean = mean(f1units)) %>% 
+  arrange(desc(mean))
+f1units
+
+permits_big <- permits %>% 
+  semi_join(f1units %>% filter(mean > 120)) %>%
+  mutate(date = year + (month - 1) / 12)
+```
+
+Now replot:
+
+```{r}
+ggplot(permits_big, aes(date, f1units)) + 
+  geom_line(aes(group = area))
+```
+
+```{r}
+ggplot(permits_big, aes(date, f1units)) + 
+  geom_line(aes(group = area)) + 
+  scale_y_log10()
+
+ggplot(permits_big, aes(date, f1units)) + 
+  geom_line(aes(group = area), alpha = 1/10) + 
+  scale_y_log10()
+
+ggplot(permits_big, aes(date, f1units)) + 
+  geom_line(aes(group = area), alpha = 1/5) + 
+  scale_y_log10() + 
+  geom_smooth(se = FALSE)
+```
+
+## What's that regular pattern?
+
+```{r}
+houston <- permits_big %>% filter(str_detect(area, "Houston"))
+ggplot(houston, aes(date, f1units + 1)) +
+  geom_line()
+
+ggplot(houston, aes(month, f1units + 1)) +
+  geom_line(aes(group = year)) +
+  geom_smooth(se = FALSE)
+
+ggplot(houston, aes(month, f1units + 1)) +
+  geom_line(aes(group = year)) +
+  geom_smooth(se = FALSE) + 
+  scale_y_log10()
+
+```
+
+Wonderings:
+
+* Is the seaonal pattern more pronounced in colder climates?
+* What's the lag between permitting and beginning construction?
+* What drives seasonal pattern? July usually less pleasant than Jan in Houston.
+
+## Can we remove it?
+
+Let's use a model to partition the signal into monthly pattern + other
+
+```{r}
+library(modelr)
+
+houston_mod <- lm(log(f1units) ~ factor(month), data = houston)
+houston %>%
+  add_predictions(houston_mod) %>%
+  ggplot(aes(date, pred)) +
+  geom_line()
+
+houston %>%
+  add_residuals(houston_mod) %>%
+  ggplot(aes(date, resid)) +
+  geom_hline(yintercept = 0, colour = "white", size = 3) +
+  geom_line()
+```
+
+## Now for all cities
+
+```{r}
+by_area <- permits_big %>%
+  group_by(area) %>%
+  nest()
+
+area_model <- function(df) {
+  lm(log10(f1units + 1) ~ factor(month), data = df)
+}
+
+detrended <- by_area %>% mutate(
+  model = map(data, area_model),
+  resids = map2(data, model, add_residuals)
+) %>% unnest(resids)
+
+
+ggplot(detrended, aes(date, resid)) +
+  geom_line(aes(group = area), alpha = 1/10) +
+  geom_smooth(se = FALSE)
+
+ggplot(detrended, aes(date, 10 ^ resid)) +
+  geom_line(aes(group = area), alpha = 1/10) +
+  geom_smooth(se = FALSE)
+
+ggplot(detrended, aes(date, 10 ^ resid)) +
+  geom_line(aes(group = area), alpha = 1/10) +
+  stat_summary(geom = "line", fun.y = function(x) quantile(x, 0.25), colour = "blue") +
+  stat_summary(geom = "line", fun.y = function(x) quantile(x, 0.75), colour = "blue")
+```
+
+Wonderings:
+
+* Is the gap spreading?
+* Can explain why some cities are growing more?
+* Is it population? Is it geography?  (Probably more complex than either!)
+* Does the pattern follow for 2-4 and 5+ family units?

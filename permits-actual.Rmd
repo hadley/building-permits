@@ -1,0 +1,146 @@
+# US building permit
+
+```{r setup}
+library(tidyverse)
+```
+
+## Data import
+
+Data downloaded from <https://www.recenter.tamu.edu/data/building-permits/>
+
+```{r}
+permits_raw <- read_csv("dataPermit_full.csv", na = "null")
+permits_raw
+```
+
+* area = metropolitan standard area
+* date = month / year (character vector, or strings)
+* f1 = 1 family house, f24 = 2-4 familes, f5 = 5+ family house
+* units = number of buildings, change in units; value = average value of building; valchange = change in value
+
+```{r}
+permits <- permits_raw %>%
+  separate(date, c("month", "year"), "/", convert = TRUE) %>%
+  filter(year > 2007) %>%
+  select(-ends_with("change"))
+permits
+```
+
+## Basic eda
+
+```{r}
+permits %>% count(year)
+permits %>% count(area)
+permits %>% count(area) %>% count(n)
+```
+
+I'm focus on single family homes
+
+```{r}
+permits <- permits %>% 
+  mutate(date = year + (month - 1) / 12)
+
+ggplot(permits, aes(date, f1units)) + 
+  geom_line(aes(group = area))
+```
+
+## Focus
+
+Focus on big cities. Possible bias our results, because big cities are small cities? 
+```{r}
+f1units <- permits %>% 
+  group_by(area) %>%
+  summarise(mean = mean(f1units)) %>% 
+  arrange(desc(mean))
+f1units
+
+f1units %>% filter(mean > 100)
+
+permits_big <- permits %>%
+  semi_join(f1units %>% filter(mean > 100))
+permits_big
+```
+
+
+```{r}
+ggplot(permits_big, aes(date, f1units)) + 
+  geom_line(aes(group = area))
+
+ggplot(permits_big, aes(date, f1units)) + 
+  geom_line(aes(group = area), alpha = 1/10)
+
+ggplot(permits_big, aes(date, f1units)) + 
+  geom_line(aes(group = area), alpha = 1/10) + 
+  scale_y_log10()
+
+ggplot(permits_big, aes(date, f1units)) + 
+  geom_line(aes(group = area), alpha = 1/10) + 
+  scale_y_log10() + 
+  geom_smooth(se = FALSE)
+
+```
+
+## Model
+
+```{r}
+houston <- permits %>% filter(str_detect(area, "Houston"))
+houston %>% count(area)
+
+ggplot(houston, aes(date, f1units)) + 
+  geom_line(aes(group = area))
+
+ggplot(houston, aes(month, f1units)) + 
+  geom_line(aes(group = year)) +
+  scale_y_log10()
+
+```
+
+Question:
+
+* Is this pattern the same everywhere?
+* What drives it? Is it the weather?
+* Houston in July is less pleasant than Houston Dec
+
+```{r}
+library(modelr)
+
+
+houston_mod <- lm(log(f1units) ~ factor(month), data = houston)
+
+houston %>% 
+  add_predictions(houston_mod) %>%
+  ggplot(aes(date, pred)) + 
+  geom_line()
+
+houston %>% 
+  add_residuals(houston_mod) %>%
+  ggplot(aes(date, resid)) + 
+  geom_line()
+  
+```
+
+* What's driving this trend?
+* What hapened around 2010?
+
+## Extend the model to every city
+
+```{r}
+by_area <- permits_big %>%
+  group_by(area) %>%
+  nest()
+
+area_model <- function(df) {
+  lm(log10(f1units + 1) ~ factor(month), data = df)
+}
+
+detrended <- by_area %>% mutate(
+  model = map(data, area_model),
+  resids = map2(data, model, add_residuals)
+) %>% unnest(resids)
+
+ggplot(detrended, aes(date, resid)) + 
+  geom_line(aes(group = area), alpha = 1/10) + 
+  geom_smooth(se = FALSE)
+
+```
+
