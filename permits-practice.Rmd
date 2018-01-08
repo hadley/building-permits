@@ -1,3 +1,7 @@
+---
+output: github_document
+---
+
 # US building permits
 
 ```{r setup}
